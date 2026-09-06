@@ -1,0 +1,4 @@
+Experiment,Epochs,Logged training+validation seconds
+final_vit_tiny_lr3e-4,7,1200.1289356570014
+final_efficientnet_b0_lr1e-3,7,1042.2381493500025
+final_mobilenet_v3_large_lr1e-3,7,1009.7499932349974

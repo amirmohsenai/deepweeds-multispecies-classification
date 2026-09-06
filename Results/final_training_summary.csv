@@ -1,0 +1,4 @@
+experiment,model,config_id,best_val_top1,best_epoch,epochs_run,training_time_seconds,stopped_early,peak_vram_mb,mean_train_samples_per_second,checkpoint,parameters_total,parameters_trainable_at_end
+final_efficientnet_b0_lr1e-3,efficientnet_b0,lr1e-3,0.820746660232544,6,7,1044.2268270799996,False,406.70068359375,79.30353857829105,/content/multi_species_weed_recognition/results/checkpoints/final_efficientnet_b0_lr1e-3_best.pt,4019077,1140921
+final_mobilenet_v3_large_lr1e-3,mobilenet_v3_large,lr1e-3,0.846964955329895,5,7,1011.2565160930008,True,326.4189453125,80.98778065527779,/content/multi_species_weed_recognition/results/checkpoints/final_mobilenet_v3_large_lr1e-3_best.pt,4213561,2991849
+final_vit_tiny_lr3e-4,vit_tiny,lr3e-4,0.8233115077018738,7,7,1203.4496703280001,False,383.5439453125,66.29665205100942,/content/multi_species_weed_recognition/results/checkpoints/final_vit_tiny_lr3e-4_best.pt,5526153,891849

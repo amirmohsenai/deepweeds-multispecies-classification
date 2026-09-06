@@ -1,0 +1,7 @@
+Metric,Value
+Number of classes,9.0
+Number of labeled images,17509.0
+Minimum samples per class,1009.0
+Maximum samples per class,9106.0
+Mean samples per class,1945.4444444444443
+Median samples per class,1062.0

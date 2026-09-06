@@ -1,0 +1,4 @@
+split,images
+train,10495
+val,3509
+test,3505

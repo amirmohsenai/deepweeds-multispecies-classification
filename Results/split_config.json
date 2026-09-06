@@ -1,0 +1,21 @@
+{
+  "n_splits": 5,
+  "assignment_geometry": {
+    "test_fold": 0,
+    "validation_fold": 1,
+    "training_folds": [
+      2,
+      3,
+      4
+    ]
+  },
+  "grouping_strategy_selected": "capture_timestamp",
+  "split_seed_selected": 42,
+  "strict_grouping": true,
+  "candidate_priority": [
+    "box_id (capture date + instrument ID)",
+    "capture_timestamp",
+    "source_image_id"
+  ],
+  "note": "Leakage-aware reconstruction; not claimed to reproduce the repository's exact published subset CSV assignment."
+}

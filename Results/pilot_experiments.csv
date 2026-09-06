@@ -1,0 +1,7 @@
+experiment,model,config_id,best_val_top1,best_epoch,epochs_run,training_time_seconds,stopped_early,peak_vram_mb,mean_train_samples_per_second,checkpoint
+pilot_efficientnet_b0_lr1e-3,efficientnet_b0,lr1e-3,0.6708464026451111,2,2,883.2898411339997,False,405.2822265625,44.95892411929993,/content/multi_species_weed_recognition/results/checkpoints/pilot_efficientnet_b0_lr1e-3_best.pt
+pilot_efficientnet_b0_lr5e-4,efficientnet_b0,lr5e-4,0.5275006890296936,2,2,182.93258827399995,False,405.2822265625,78.93901998277533,/content/multi_species_weed_recognition/results/checkpoints/pilot_efficientnet_b0_lr5e-4_best.pt
+pilot_mobilenet_v3_large_lr1e-3,mobilenet_v3_large,lr1e-3,0.7475064396858215,2,2,178.4870581500004,False,326.240234375,80.57578104059272,/content/multi_species_weed_recognition/results/checkpoints/pilot_mobilenet_v3_large_lr1e-3_best.pt
+pilot_mobilenet_v3_large_lr5e-4,mobilenet_v3_large,lr5e-4,0.7475064396858215,2,2,176.15604816999985,False,326.240234375,81.48862295088799,/content/multi_species_weed_recognition/results/checkpoints/pilot_mobilenet_v3_large_lr5e-4_best.pt
+pilot_vit_tiny_lr3e-4,vit_tiny,lr3e-4,0.6349387168884277,2,2,207.9257276190001,False,383.5439453125,66.25907797260166,/content/multi_species_weed_recognition/results/checkpoints/pilot_vit_tiny_lr3e-4_best.pt
+pilot_vit_tiny_lr1e-4,vit_tiny,lr1e-4,0.5049871802330017,2,2,206.55763621299957,False,383.5439453125,65.82662535279442,/content/multi_species_weed_recognition/results/checkpoints/pilot_vit_tiny_lr1e-4_best.pt

@@ -1,0 +1,20 @@
+{
+  "efficientnet_b0": {
+    "id": "lr1e-3",
+    "head_lr": 0.001,
+    "finetune_lr": 0.0003,
+    "weight_decay": 0.0001
+  },
+  "mobilenet_v3_large": {
+    "id": "lr1e-3",
+    "head_lr": 0.001,
+    "finetune_lr": 0.0003,
+    "weight_decay": 0.0001
+  },
+  "vit_tiny": {
+    "id": "lr3e-4",
+    "head_lr": 0.0003,
+    "finetune_lr": 0.0001,
+    "weight_decay": 0.01
+  }
+}
