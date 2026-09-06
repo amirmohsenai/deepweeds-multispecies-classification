@@ -1,0 +1,460 @@
+\documentclass[11pt,a4paper]{article}
+\pdfinfoomitdate=1
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,tabularx,array}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{fancyhdr}
+\usepackage{url}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=black,citecolor=black}
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,columns=fullflexible}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Multi-Species Weed Recognition}
+\lfoot{Technical Report}
+\rfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\begin{document}
+\begin{titlepage}
+\pagenumbering{gobble}
+\centering
+\vspace*{2.2cm}
+{\LARGE\bfseries Multi-Species Weed Recognition:\\[0.35em] 9-Class DeepWeeds Classification}\\[1.1cm]
+{\large A Technical Analysis of the Python Implementation and Jupyter Notebook}\\[2.0cm]
+\vfill
+\begin{minipage}{0.88\textwidth}
+\centering
+This report documents the computational pipeline, mathematical formulation, model training procedure, evaluation design, reproducibility mechanisms, and quality-control architecture implemented by the supplied source code.
+\end{minipage}
+\vfill
+\end{titlepage}
+\pagenumbering{arabic}
+\tableofcontents
+\newpage
+\section{Abstract}
+The supplied project implements a research-oriented image-classification pipeline for the nine-class DeepWeeds problem, covering eight invasive weed species and a negative/background class. The implementation compares three pretrained architectures - EfficientNet-B0, MobileNetV3-Large, and ViT-Tiny - under a common classification task while allowing architecture-specific input normalization and augmentation details. Beyond model training, the code contains a substantial data-engineering and experimental-control layer: dataset acquisition from multiple sources, archive and image-count validation, official-label resolution, conservative capture-based grouping, deterministic stratified group splitting, training-only class weighting, two-stage transfer learning, checkpoint selection by validation accuracy, held-out test evaluation, artifact generation, runtime instrumentation, and fourteen executable quality-control passes.
+
+The key scientific property of the implementation is that it explicitly separates data preparation, model selection, and final testing. A deterministic five-fold-derived geometry assigns fold 0 to testing, fold 1 to validation, and folds 2-4 to training, while enforcing group disjointness and class completeness. The code explicitly states that this is a leakage-aware reconstruction rather than a byte-for-byte reproduction of the published DeepWeeds fold assignments. The training procedure is likewise structured to avoid test-set exposure: two candidate learning-rate configurations are piloted per architecture, the preferred configuration is selected from validation top-1 accuracy, and the best validation checkpoint is restored before the held-out test pass.
+
+This report explains the project at both the conceptual and implementation levels. It does not reproduce benchmark values, plots, screenshots, or experimental conclusions, because those depend on executing the pipeline against the real dataset and assigned runtime hardware.
+
+\section{Introduction}
+The project addresses supervised visual classification in an agricultural imaging setting. Its computational objective is to map each input image to one of nine fixed classes. The source identifies the task as multi-species weed recognition and includes a negative/background category. The practical motivation is not only to train a classifier, but to construct an experiment that can be run in a constrained Google Colab environment without abandoning basic scientific safeguards.
+
+The implementation is notable because the machine-learning model is only one layer of the system. The notebook also handles acquisition, caching, integrity verification, metadata normalization, grouping, split construction, data loading, training-state management, evaluation, reproducibility artifacts, and automated quality control. As a result, the source is better understood as an end-to-end experimental pipeline rather than as an isolated training script.
+
+The scope of this report is the supplied implementation itself. When a design rationale is explicitly documented in the source, it is stated as such. When the rationale is inferred from the code structure, the report uses cautious language. No biological explanation of observed model errors is inferred beyond what the implementation can actually support.
+
+\section{Project Overview}
+At a conceptual level, the pipeline can be decomposed into nine stages.
+
+\begin{enumerate}
+\item Environment preparation and reproducibility configuration.
+\item DeepWeeds acquisition, caching, extraction, and integrity validation.
+\item Official-label resolution and construction of a metadata table.
+\item Leakage-aware grouped partitioning into training, validation, and test subsets.
+\item Model-specific image transformation and dataset construction.
+\item Pilot selection between two learning-rate configurations per architecture.
+\item Final two-stage transfer learning with validation-based checkpoint selection.
+\item Held-out test inference followed by scalar and per-class evaluation.
+\item Artifact audit, runtime reporting, and reproducible packaging.
+\end{enumerate}
+
+The implementation deliberately keeps the test set outside the model-selection loop. The validation set is used for both pilot configuration selection and epoch-level checkpoint selection, while the test set is only opened after a final configuration and checkpoint have been fixed.
+
+The source defines the default execution mode as \texttt{colab\_balanced}. Under that profile, the pilot uses at most 6,000 training examples, whereas final training is allowed up to 120,000 examples. Because the supplied DeepWeeds release is stated to contain 17,509 images, the 120,000 cap is not active for this dataset; in the default configuration the final stage therefore uses the full available training split. The \texttt{full} compute profile removes the cap explicitly and increases the pilot ceiling to 10,000 examples.
+
+\section{Source Inventory and Execution Model}
+The standalone Python source contains 78 named functions and one dataset class. The notebook organizes the same computational system into 39 cells, mixing executable code and Markdown documentation. The Markdown is scientifically meaningful: it states the intended protocol, clarifies where the implementation differs from the published DeepWeeds fold files, and documents the reason for grouping images by acquisition metadata rather than by arbitrary image-level randomization.
+
+The source has several layers of abstraction. At the bottom is filesystem and network handling. Above that is metadata construction. The next layer is split generation and dataset transformation. The model layer then defines architectures, parameter freezing, optimization, metric accumulation, checkpointing, and experiment orchestration. The final layer handles diagnostics, quality control, and packaging.
+
+A few implementation details matter for understanding execution order. The notebook creates a general-purpose \texttt{train\_transform} and \texttt{eval\_transform}, but the actual training experiments call \texttt{build\_model\_transforms(model\_name)} inside \texttt{train\_experiment}. Therefore, the final experiments use the architecture-specific normalization profile rather than the earlier generic transform objects. Likewise, the global train/validation/test loaders are created for pipeline checks and dataflow validation, whereas each experiment creates its own train and validation loaders so that model-specific transforms and worker lifecycles can be controlled independently.
+
+\section{Dataset Acquisition and Validation}
+The acquisition subsystem is unusually extensive for a classification notebook because it treats data availability and data integrity as explicit experimental prerequisites.
+
+The main entry point is \texttt{prepare\_dataset\_root()}. In automatic mode it first searches Google Drive for a validated archive or a complete extracted DeepWeeds directory. If a usable local copy is already present, it reuses it. Otherwise, the acquisition routine attempts an official Google Drive image route, then a public Kaggle mirror, and finally a Zenodo download. The final Zenodo route is additionally checked against the size and MD5 checksum returned by the Zenodo API, followed by ZIP-level validation.
+
+The archive validator performs three logically distinct checks. First, the path must represent a supported archive and \texttt{zipfile.is\_zipfile()} must accept it. Second, the archive must contain exactly the expected 17,509 image files. Third, \texttt{ZipFile.testzip()} is used to detect CRC failures. The validation result is memoized by absolute path, file size, and modification time so repeated discovery operations do not rescan a large archive unnecessarily.
+
+The extraction routine also contains a path-safety check. Before extracting a member, the destination path is resolved and compared with the resolved extraction root using \texttt{os.path.commonpath}. An archive member that would escape the destination directory raises an exception. This is a concrete security property of the implementation rather than a generic assumption about archive extraction.
+
+Incomplete download artifacts are handled separately. Temporary \texttt{.part} files are never silently accepted as final data. A stale partial download is removed unless it independently passes the same strict archive validation, in which case it can be promoted to the final archive. File copies are similarly staged through temporary \texttt{.part} paths and atomically renamed into place.
+
+The labels file is downloaded separately from the official DeepWeeds repository and cached locally and, when possible, in Google Drive. The acquisition design therefore separates the large image payload from the relatively small label metadata. This allows later sessions to reuse the expensive binary archive without repeatedly fetching it.
+
+\section{Label Resolution and Metadata Construction}
+The classifier never infers the target class from visual appearance or directory names. The source reads the official \texttt{labels.csv} and expects \texttt{Filename}, \texttt{Label}, and \texttt{Species} fields, while also providing normalized-column fallback matching when exact names differ.
+
+Species strings are normalized by stripping surrounding whitespace, converting to lowercase, and collapsing internal whitespace. The resulting values are mapped to stable internal codes:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Code & Class name \\
+\midrule
+DW\_CHAP & Chinee apple \\
+DW\_LANT & Lantana \\
+DW\_PARK & Parkinsonia \\
+DW\_PART & Parthenium \\
+DW\_PRAC & Prickly acacia \\
+DW\_RUBV & Rubber vine \\
+DW\_SIWE & Siam weed \\
+DW\_SNWE & Snake weed \\
+DW\_NEG & Negative \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The code also defines the expected numeric labels 0 through 8 and checks that the numeric \texttt{Label} agrees with the mapped species code. A mismatch is treated as a fatal metadata error. This is important because it prevents silent disagreement between two label representations.
+
+Image paths are resolved through an in-memory basename-to-path dictionary constructed from the discovered images. Ambiguous duplicate basenames are removed from the fast dictionary rather than guessed. Only unresolved rows use a slower fallback search over a small set of likely roots. This design reduces per-row filesystem overhead while retaining compatibility with nonstandard extraction layouts.
+
+The resulting metadata table contains, among other fields, \texttt{path}, \texttt{eppo}, \texttt{source\_image\_id}, \texttt{class\_index}, \texttt{class\_name}, \texttt{trial\_id}, \texttt{box\_id}, and file size. Several columns expected by an earlier schema (\texttt{plant\_id}, \texttt{growth\_condition}, bounding-box coordinates) are retained as empty placeholders. This is an explicit compatibility layer, not an assertion that DeepWeeds provides plant bounding boxes in this pipeline.
+
+A particularly important distinction is that the label-resolution fast path does not decode every image. Width and height are left unknown, \texttt{status} is marked \texttt{not\_scanned}, and the source prints that the full image integrity scan was not performed. The implementation therefore avoids manufacturing image-quality statistics it has not actually measured.
+
+\section{Leakage-Aware Split Protocol}
+The split strategy is designed around the filename convention documented in the notebook: identifiers follow the form \texttt{YYYYMMDD-HHMMSS-ID}. The strongest grouping candidate used by the implementation is capture date plus instrument identifier. For example, the grouping concept can be written as
+
+\begin{equation}
+G\_i = \operatorname{date}(x\_i)\;\Vert\;\operatorname{camera}(x\_i),
+\end{equation}
+
+where $x\_i$ is the source image identifier and $\Vert$ denotes concatenation into a group key.
+
+The grouping helper produces three candidate levels, ordered from stronger semantic grouping to more conservative fallback: \texttt{box\_id}, exact capture timestamp, and the unique source image identifier. The first candidate is accepted only when each class occurs in at least five distinct groups, because a class-complete five-fold split requires at least one group per fold. A deterministic sweep over 50 trial seeds is then used to find a \texttt{StratifiedGroupKFold} assignment in which every class appears in every fold.
+
+The selected folds are converted into the experiment geometry
+
+\begin{equation}
+\mathcal{D}\_{\mathrm{test}} = F\_0, \qquad
+\mathcal{D}\_{\mathrm{val}} = F\_1, \qquad
+\mathcal{D}\_{\mathrm{train}} = F\_2 \cup F\_3 \cup F\_4,
+\end{equation}
+
+which gives a nominal 20/20/60 partition by fold count, while actual image counts can differ slightly because groups are indivisible.
+
+The code then checks class completeness independently for train, validation, and test. It also forms every pair of split-group sets and requires empty intersections. Thus, when the grouping constraint is satisfied, no group key appears in more than one partition.
+
+The scientific interpretation must be precise. This is a leakage-aware reconstruction based on the available DeepWeeds identifiers; it is not a claim that the exact row-level assignment equals the repository's published five-fold CSV assignment. The notebook explicitly records this distinction in \texttt{split\_config.json}, and it saves the complete split metadata plus a SHA-256 checksum.
+
+\section{Data Transforms and Dataset Abstraction}
+All architectures consume 224 by 224 RGB tensors. Training uses mild stochastic augmentation: \texttt{RandomResizedCrop} with scale 0.75-1.0 and aspect ratio 0.9-1.1, horizontal flipping with probability 0.5, modest \texttt{ColorJitter}, and a small affine perturbation consisting of rotation, translation, and scale variation. Validation and test data use deterministic resize-then-center-crop preprocessing.
+
+The architecture-specific transform builder is important because the CNNs and ViT-Tiny are normalized differently. EfficientNet-B0 and MobileNetV3-Large use the standard ImageNet mean and standard deviation,
+
+\begin{equation}
+\boldsymbol{\mu}\_{\mathrm{CNN}}=(0.485,0.456,0.406),\qquad
+\boldsymbol{\sigma}\_{\mathrm{CNN}}=(0.229,0.224,0.225),
+\end{equation}
+
+while the ViT configuration uses
+
+\begin{equation}
+\boldsymbol{\mu}\_{\mathrm{ViT}}=(0.5,0.5,0.5),\qquad
+\boldsymbol{\sigma}\_{\mathrm{ViT}}=(0.5,0.5,0.5).
+\end{equation}
+
+The code also uses bilinear interpolation for the CNNs and bicubic interpolation for the ViT transform profile. Using architecture-aware preprocessing is preferable to forcing all pretrained models through one normalization convention, because pretrained weights were learned under different preprocessing assumptions.
+
+\texttt{OPPDPlantDataset} is a compact PyTorch \texttt{Dataset}. It converts the pandas columns for paths and integer labels into NumPy arrays once, avoiding repeated pandas indexing from worker processes. Each item opens the image, converts it to RGB, applies the supplied transform, and returns the tensor, integer label, and path. The class name is historically named \texttt{OPPDPlantDataset}, but in this code it is simply the dataset adapter used for DeepWeeds metadata.
+
+The \texttt{stratified\_cap} helper is used only when a sample cap is active. It computes class quotas proportional to the source class distribution, floors the quotas, enforces at least one example per class, and then removes excess allocation before sampling without replacement. The resulting subset is shuffled with the same seed. This means the pilot subset remains approximately class-proportional across architectures.
+
+\section{Model Architectures}
+The project compares two convolutional networks and one transformer under the same nine-class objective.
+
+\subsection{8.1 EfficientNet-B0}
+The code calls \texttt{torchvision.models.efficientnet\_b0} with default pretrained weights. The final linear layer in \texttt{model.classifier} is replaced so that its output dimensionality equals nine. During classifier-only training, only the classifier is trainable. During fine-tuning, the final two blocks of the EfficientNet feature stack are unfrozen.
+
+\subsection{8.2 MobileNetV3-Large}
+MobileNetV3-Large is constructed through torchvision with default pretrained weights. Its classifier is replaced by a nine-output linear layer. The fine-tuning stage exposes the final three feature blocks in addition to the classifier.
+
+\subsection{8.3 ViT-Tiny}
+The transformer baseline is instantiated through \texttt{timm.create\_model} with the pretrained model identifier \texttt{vit\_tiny\_patch16\_224}, nine output classes, and an image size of 224. In the head stage, the classification head and, when present, \texttt{fc\_norm} are trainable. During fine-tuning, the last two transformer blocks plus the final normalization layer are exposed to optimization.
+
+The unfreezing policy is therefore architecture-specific but intentionally shallow. Instead of updating all pretrained parameters, the code updates the classifier first and then exposes only a small portion of the backbone. This limits the number of newly optimized degrees of freedom and reduces the risk and computational cost associated with full-network fine-tuning.
+
+\section{Class Balancing and Mathematical Formulation}
+The loss function is weighted cross-entropy. For a training set with class counts $n\_1,\ldots,n\_C$, total sample count $N$, and $C=9$ classes, the unnormalized class weight used by the implementation is
+
+\begin{equation}
+\tilde{w}\_c = \frac{N}{C\,n\_c}.
+\end{equation}
+
+The weights are then normalized by their arithmetic mean,
+
+\begin{equation}
+w\_c = \frac{\tilde{w}\_c}{\frac{1}{C}\sum\_{j=1}^{C}\tilde{w}\_j}.
+\end{equation}
+
+The source computes these weights from \texttt{train\_df} only, after any final-training cap has been applied. Validation and test labels therefore have no role in the class-weight calculation.
+
+For logits $z\_i \in \mathbb{R}^{C}$, the model converts logits to class probabilities with the softmax function
+
+\begin{equation}
+p\_{ic}=\frac{\exp(z\_{ic})}{\sum\_{j=1}^{C}\exp(z\_{ij})}.
+\end{equation}
+
+The target class is $y\_i$. Conceptually, the weighted categorical cross-entropy is
+
+\begin{equation}
+\mathcal{L}(\theta) =
+-\sum\_{i=1}^{N} w\_{y\_i}\log p\_{i,y\_i},
+\end{equation}
+
+with the exact batch reduction governed by PyTorch's \texttt{CrossEntropyLoss}. Because the implementation passes class weights directly to that loss, PyTorch's weighted-mean reduction uses the sum of selected target weights as the normalization factor for the batch. The class-weight formula itself is therefore the mechanism for reweighting class contribution, while the framework controls the final scalar reduction.
+
+The top-$k$ accuracy calculation is based directly on the ranking of logits. For sample $i$ and class label $y\_i$, top-$k$ correctness is
+
+\begin{equation}
+\mathbf{1}\!\left\{y\_i \in \operatorname{TopK}(z\_i,k)\right\}.
+\end{equation}
+
+The implementation computes top-1 and top-5 correctness from one \texttt{topk} operation per batch. Since the task has nine classes, top-5 remains a meaningful complementary metric while top-1 is used for model-selection decisions.
+
+\section{Optimization and Learning Procedure}
+Each experiment has two stages. The first stage trains the classification head while the pretrained backbone is frozen. The second stage unfreezes a small architecture-specific subset of the backbone and continues fine-tuning.
+
+The optimizer is AdamW. In the head-only stage all trainable parameters share the configured head learning rate. In the fine-tuning stage the code constructs two parameter groups: backbone parameters receive the lower backbone learning rate, while classifier/head parameters retain the larger head learning rate. This is a standard discriminative-learning-rate pattern, but the reportable fact here is specifically that the code implements it through named-parameter prefix matching and \texttt{requires\_grad} filtering.
+
+The source uses cosine annealing separately for each training stage:
+
+\begin{equation}
+\eta\_t = \eta\_{\min} + \frac{1}{2}(\eta\_0-\eta\_{\min})
+\left(1+\cos\frac{\pi t}{T}\right),
+\end{equation}
+
+where $T$ is the number of epochs assigned to the current stage. The code relies on PyTorch's \texttt{CosineAnnealingLR}, with one scheduler instantiated for the head stage and a new scheduler instantiated for fine-tuning.
+
+Validation top-1 accuracy is the checkpoint criterion. A new checkpoint is written only when
+
+\begin{equation}
+a\_t > a\_{\mathrm{best}} + \delta,
+\qquad \delta=10^{-4},
+\end{equation}
+
+where $a\_t$ is validation top-1 accuracy. During fine-tuning, a patience counter increments when this condition is not met; after two consecutive non-improving epochs, training stops early. The head stage does not trigger early stopping. Importantly, the checkpoint is updated whenever the global best validation accuracy improves, regardless of which stage produced it, and that single best checkpoint is restored at the end.
+
+The default hyperparameter candidates are:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Model & Config. & Head LR & Fine-tune LR \\
+\midrule
+EfficientNet-B0 & lr1e-3 & $10^{-3}$ & $3\times10^{-4}$ \\
+EfficientNet-B0 & lr5e-4 & $5\times10^{-4}$ & $10^{-4}$ \\
+MobileNetV3-Large & lr1e-3 & $10^{-3}$ & $3\times10^{-4}$ \\
+MobileNetV3-Large & lr5e-4 & $5\times10^{-4}$ & $10^{-4}$ \\
+ViT-Tiny & lr3e-4 & $3\times10^{-4}$ & $10^{-4}$ \\
+ViT-Tiny & lr1e-4 & $10^{-4}$ & $5\times10^{-5}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+EfficientNet-B0 and MobileNetV3-Large use weight decay $10^{-4}$, while ViT-Tiny uses $10^{-2}$. Two candidates are piloted per architecture, giving six pilot jobs in total when pilot execution is enabled. The pilot uses one head epoch and one fine-tuning epoch because \texttt{PILOT\_EPOCHS=2}. The selected candidate is then used for the final training run with one head epoch and up to six fine-tuning epochs.
+
+\section{Training Loop and Computational Mechanics}
+\texttt{run\_epoch} centralizes the actual batch computation. It switches the model between train and evaluation modes, creates device-resident accumulators for loss and accuracy counts, transfers images and labels with optional non-blocking copies, performs mixed-precision autocasting when a CUDA device is available, and executes optimizer updates only in training mode.
+
+The implementation supports automatic mixed precision (AMP). On supported CUDA hardware it prefers bfloat16 when \texttt{torch.cuda.is\_bf16\_supported()} returns true; otherwise it uses float16. A gradient scaler is used only for float16 training. On CPU, the code falls back to float32 and disables AMP.
+
+A small but technically important detail is the treatment of BatchNorm. When the network is in training mode, \texttt{\_set\_train\_mode} identifies frozen BatchNorm modules and places them back into evaluation mode when none of their parameters are trainable. This prevents frozen convolutional backbones from changing running statistics solely because they are traversed during classifier-only training.
+
+The metric accumulation is intentionally device-oriented. Per batch, the code accumulates the detached scalar loss multiplied by batch size and accumulates integer top-1/top-5 counts on the device. The final loss and accuracies are transferred to Python only once after the epoch. This reduces repeated host-device synchronization.
+
+The DataLoader configuration also reflects the target environment. The number of workers is capped at four. Pinning is enabled when CUDA is available, persistent workers are used when there is at least one worker, and a prefetch factor of two is configured. A seeded \texttt{torch.Generator} controls batch shuffling, while \texttt{seed\_worker} propagates worker-specific seeds into NumPy and Python's standard random module. Worker processes are explicitly shut down at experiment boundaries to avoid retaining resources across multiple model runs.
+
+The source additionally keeps completed final models on CPU between evaluation stages. This is a memory-management decision: three final networks need not simultaneously occupy accelerator memory simply because they are stored in notebook state.
+
+\section{Pilot Selection and Final Experiment Isolation}
+Pilot experiments are run independently for each architecture/configuration pair against the same validation frame. Each pilot calls \texttt{train\_experiment}, but with the pilot training subset rather than the full training frame. The best pilot configuration is the row with the largest \texttt{best\_val\_top1}; ties are resolved by preferring the earlier best epoch.
+
+This selection mechanism is deliberately narrow. It does not use Macro F1, weighted F1, training loss, test accuracy, or runtime as the formal model-selection criterion. That makes the experiment protocol simple and auditable: the hyperparameter decision is explicitly tied to validation top-1 accuracy.
+
+Once a configuration is selected, it is written to \texttt{selected\_configs.json}. Final training then starts a fresh pretrained model for each architecture. This is important because the final model does not continue from a pilot checkpoint; instead, the pilot is treated as a configuration search stage and the final model is retrained from the pretrained initialization on the full final training split.
+
+The source also re-seeds at the start of each \texttt{train\_experiment}. Thus the random state is reset for each architecture/configuration run, making the normal single-seed experiment reproducible at the experiment-design level. The code does not claim bitwise identity by default because strict deterministic algorithms are disabled unless explicitly requested.
+
+\section{Held-Out Evaluation and Error Analysis}
+After final training, each retained model is moved to the active device and evaluated on the test frame with the model-specific deterministic evaluation transform. Inference is wrapped in \texttt{torch.inference\_mode()} so no autograd graph is constructed.
+
+For each test image, the code stores the ground-truth class, predicted class, full nine-dimensional probability vector, predicted probability, source path, and correctness flag. This makes the evaluation artifact richer than a single scalar score and supports later inspection without re-running inference.
+
+The scalar metrics computed for each model are accuracy, macro precision, macro recall, macro F1, and weighted F1. Let $P\_c$, $R\_c$, and $F\_{1,c}$ denote per-class precision, recall, and F1. Macro F1 is
+
+\begin{equation}
+F\_{1,\mathrm{macro}} = \frac{1}{C}\sum\_{c=1}^{C}F\_{1,c},
+\end{equation}
+
+where every class receives equal weight. Weighted F1 instead weights class-specific F1 values by the number of true examples, so its interpretation is dominated more strongly by frequent classes.
+
+The confusion matrix is computed with all nine labels in a fixed order. The error-analysis layer identifies low-recall classes, saves the highest-confidence incorrect predictions, and extracts the most frequent off-diagonal confusion pairs for the best model by test top-1 accuracy. The code explicitly avoids assigning biological causes to these errors because no causal biological analysis is performed.
+
+Although the notebook also contains cells that generate training curves, confusion-matrix figures, and an image montage of selected errors, those artifacts are intentionally not part of this report. The present report is limited to the computational and methodological explanation requested for the academic portfolio.
+
+\section{Reproducibility Engineering}
+Reproducibility is treated as a system property rather than a single random seed. The implementation sets Python's random seed, NumPy's random seed, \texttt{PYTHONHASHSEED}, and PyTorch seeds, and also seeds CUDA when available. The \texttt{STRICT\_DETERMINISM} flag controls whether PyTorch uses deterministic algorithm settings. The default is false because the notebook explicitly favors faster cuDNN kernel selection for fixed-size inputs.
+
+The split itself is made reproducible through an explicit seed sweep whose trial sequence is completely determined by the base seed. The final split metadata are saved to CSV and hashed with SHA-256. The selected grouping strategy, selected split seed, fold geometry, and strict-grouping flag are stored in \texttt{split\_config.json}.
+
+An experiment manifest records the image size, batch size, device, GPU name, seed, determinism setting, AMP state, worker count, compute profile, epoch settings, model names, selected configurations, group count, split summary, validation report, and final-model count. A separate environment manifest records Python, platform, PyTorch, torchvision, timm, NumPy, pandas, scikit-learn, CUDA runtime, and cuDNN versions.
+
+This is stronger than recording a random seed alone because many experiment properties are environment- and data-dependent. A future rerun can inspect the manifest and split checksum before interpreting differences in model behavior.
+
+\section{Quality Control and Artifact Audit}
+The notebook contains fourteen executable QC passes followed by a consolidated validation table. The checks are:
+
+\begin{enumerate}
+\item required runtime object and result-tree structure;
+\item dependency surface and version availability;
+\item function and variable dependency availability;
+\item architecture-specific transform profiles;
+\item runtime dataflow availability;
+\item tensor shape and label dtype;
+\item scientific split isolation and group leakage;
+\item metric-column presence and finiteness;
+\item runtime instrumentation fields;
+\item GPU/VRAM hygiene for retained final models;
+\item reproducibility configuration;
+\item numerical sanity for class weights and top-$k$ logic;
+\item discriminative optimizer-group behavior; and
+\item artifact completeness.
+\end{enumerate}
+
+The optimizer-group test is particularly concrete. It constructs an EfficientNet-like dummy network, applies the real \texttt{freeze\_for\_stage} and \texttt{build\_optimizer} functions, and asserts that both backbone and classifier parameters are trainable in fine-tuning and that the optimizer exposes the expected two learning rates. This tests a nontrivial piece of experiment logic without requiring a full training run.
+
+The quality-control layer is therefore more than a passive report. It actively asserts properties of the dataflow, split, tensors, training configuration, metric generation, and artifacts. Failures raise exceptions, and the final validation CSV/JSON captures the status and details of every pass that ran.
+
+\section{Result Packaging and Artifact Discipline}
+The packaging routine is designed as a final export center. It captures open Matplotlib figures, exports known in-memory DataFrames to CSV, writes machine-readable manifests, writes a human-readable README and Markdown report, checks required artifacts, constructs a ZIP archive, and then validates the archive again.
+
+The ZIP validation includes CRC testing, duplicate-name detection, and a set-equality check between the intended file set and actual archive members. Pilot checkpoints are excluded from the package by default because the code treats them as intermediate debugging artifacts rather than headline scientific outputs.
+
+A notable design choice is that the packaging function is not executed automatically at definition time. The final notebook cell is the explicit export/download center. This reduces the chance that the archive is generated before all diagnostics and final tables exist.
+
+\section{Computational Considerations}
+Several parts of the implementation are motivated by Colab-scale constraints.
+
+The dataset metadata pass is vectorized and does not decode all 17,509 images. Image paths are indexed once, pandas transformations are vectorized, and file sizes are read from filesystem metadata rather than image contents. This reduces preprocessing overhead substantially relative to per-image verification.
+
+The archive validation result is memoized. DataLoader workers are persistent across the epochs of one experiment but explicitly shut down afterward. Completed models are moved to CPU between evaluation stages. Test inference uses \texttt{torch.inference\_mode()} and device-side accumulation. These measures reduce memory pressure and avoid avoidable synchronization or worker startup costs.
+
+The computational complexity of a single training epoch is dominated by the forward and backward passes of the selected neural network. At the data-structure level, metadata indexing and class-statistic operations are essentially linear in the number of metadata rows, while the archive integrity test scales with the amount of archive content that must be inspected. The source does not provide a closed-form runtime model, so this report does not assign fabricated timing estimates.
+
+The training configuration also creates a clear computational trade-off: the pilot search is deliberately shallow, while final training uses the full available training split. This concentrates compute on promising configurations without turning the experiment into a large hyperparameter sweep.
+
+\section{Limitations and Technical Considerations}
+Several limitations can be stated directly from the source.
+
+First, the default protocol is a single selected five-fold-derived partition rather than a full five-fold retraining study. Therefore, the existence of a \texttt{StratifiedGroupKFold} construction should not be interpreted as five independent model evaluations. The source itself describes the run as a practical 60/20/20 reconstruction.
+
+Second, the strongest grouping key is derived from the filename convention as capture date plus instrument identifier. The implementation is appropriately cautious about calling a fallback \texttt{source\_image\_id} grouping a biological plant or box identifier; the code itself describes that fallback as a singleton-group leakage guard rather than a biological grouping variable.
+
+Third, the metadata fast path does not fully decode and verify every image. Archive-level CRC validation protects the downloaded ZIP, but it is not identical to opening and decoding every individual image after extraction. The source makes this distinction explicit through \texttt{status="not\_scanned"} and by leaving width and height unavailable.
+
+Fourth, strict bitwise determinism is not enabled by default. The experiment is seed-controlled and deterministic at the design level, but backend kernel choices can still vary across hardware and software environments. The saved environment manifest is therefore important for interpreting reruns.
+
+Fifth, model selection relies on validation top-1 accuracy alone. Macro F1 and weighted F1 are reported for the final test pass, but they are not used to choose the configuration or checkpoint. This is a coherent protocol, but it means the selection objective is narrower than the evaluation dashboard.
+
+Finally, the source includes plotting and image-montage functionality that is useful for human inspection, but those artifacts are not evidence of biological causation. The implementation correctly limits its formal interpretation to observed classification behavior.
+
+\section{Overall Technical Assessment}
+The supplied implementation is technically coherent as a small research-computing system. Its strongest feature is not any one neural architecture, but the explicit connection between data integrity, split design, model selection, training, evaluation, reproducibility, and artifact auditing.
+
+The separation between pilot and final training is clean. The test set remains isolated from configuration choice, class weights are computed from training data only, and the final model is restored to its best validation checkpoint before held-out evaluation. The grouping strategy is conservative, and the code refuses to continue when it cannot satisfy its class-completeness and group-disjointness requirements.
+
+The software engineering is also stronger than a typical ad hoc notebook. There are small focused helpers for acquisition, path indexing, splitting, transformation, model construction, optimizer assembly, metric calculation, checkpointing, and packaging. The code uses explicit failure modes rather than silently continuing through missing labels, unresolved paths, invalid archives, or invalid splits.
+
+The main methodological constraint is scope rather than internal incoherence: the project is a practical single-split Colab experiment, not a full statistical study across repeated seeds or repeated folds. That limitation is openly documented and can be addressed by extending the same experiment harness rather than redesigning the entire pipeline.
+
+For an academic software portfolio, the implementation demonstrates several competencies that are directly visible in the source: translating a scientific protocol into executable controls, managing leakage risks, aligning pretrained-model preprocessing with architecture requirements, implementing controlled fine-tuning, designing reproducible data artifacts, and validating nontrivial experiment invariants with executable checks.
+
+\section{Conclusion}
+The project implements a complete nine-class DeepWeeds image-classification pipeline around three pretrained architectures: EfficientNet-B0, MobileNetV3-Large, and ViT-Tiny. Its computational path begins with validated dataset acquisition and official label resolution, proceeds through conservative grouped splitting and architecture-specific preprocessing, and culminates in two-stage transfer learning with validation-based checkpoint selection and held-out test inference.
+
+From a research-engineering perspective, the most significant contribution of the code is the surrounding experimental discipline. The implementation separates training, validation, and test roles; derives class weights only from training data; records exact split metadata and checksums; exposes runtime and environment information; controls accelerator memory; and performs fourteen executable quality-control passes before packaging artifacts.
+
+The supplied source does not support claims about which architecture is empirically best, because the numerical outcomes depend on actually running the pipeline on the real dataset. What can be concluded from the code itself is that the project is organized as an auditable, leakage-aware, reproducible classification experiment with explicit computational trade-offs suitable for a constrained research environment.
+
+\section*{Appendix A. Code-to-Report Traceability}\addcontentsline{toc}{section}{Appendix A. Code-to-Report Traceability}
+The following mapping gives a direct conceptual bridge from report topics to named source components. It is intended to help a reader locate the implementation without requiring the report to reproduce the full source code.
+
+\begin{center}
+\small
+{\scriptsize\setlength{\tabcolsep}{2.5pt}\begin{tabularx}{0.98\textwidth}{>{\raggedright\arraybackslash}p{0.25\textwidth}X}
+\toprule
+Report topic & Principal source components \\
+\midrule
+Environment and reproducibility & \texttt{seed\_everything}, global configuration constants, AMP setup \\
+Dataset acquisition & \texttt{\_mount\_google\_drive}, \texttt{\_validate\_zip\_archive}, \texttt{\_download\_official\_google\_drive}, \texttt{\_download\_kaggle\_mirror}, \texttt{\_download\_zenodo\_verified}, \texttt{prepare\_dataset\_root} \\
+Label resolution & \texttt{normalize\_name}, \texttt{\_normalize\_species\_series}, metadata construction, numeric-label consistency checks \\
+Filename grouping & \texttt{\_capture\_group\_from\_filename}, \texttt{\_derive\_capture\_timestamp}, \texttt{\_candidate\_groupings} \\
+Grouped splitting & \texttt{\_groups\_have\_enough\_class\_support}, \texttt{\_try\_stratified\_group\_folds}, \texttt{make\_grouped\_split} \\
+Transforms and dataset & \texttt{build\_model\_transforms}, \texttt{OPPDPlantDataset}, \texttt{stratified\_cap} \\
+Model construction & \texttt{build\_model}, \texttt{freeze\_for\_stage}, \texttt{count\_parameters} \\
+Optimization & \texttt{build\_optimizer}, \texttt{run\_epoch}, \texttt{CosineAnnealingLR} instantiation in \texttt{train\_experiment} \\
+Pilot search & pilot loop, \texttt{select\_best\_config} \\
+Final training & \texttt{train\_experiment}, final-model loop \\
+Evaluation & \texttt{evaluate\_predictions}, \texttt{macro\_metrics}, prediction CSV generation, confusion matrices \\
+Reproducibility artifacts & split/config manifests, SHA-256 checksum, \texttt{experiment\_manifest.json}, \texttt{environment.json} \\
+Quality control & \texttt{\_qc\_pass} and fourteen named validation passes \\
+Packaging & \texttt{\_known\_result\_dataframes}, \texttt{package\_final\_results} \\
+\bottomrule
+\end{tabularx}}
+\end{center}
+
+\section*{Appendix B. Default Experimental Configuration}\addcontentsline{toc}{section}{Appendix B. Default Experimental Configuration}
+The supplied default configuration can be summarized as follows.
+
+\begin{center}
+{\small\setlength{\tabcolsep}{3pt}\begin{tabularx}{0.96\textwidth}{>{\raggedright\arraybackslash}p{0.32\textwidth}X}
+\toprule
+Setting & Default \\
+\midrule
+Seed & 42 \\
+Image size & 224 $\times$ 224 \\
+Batch size & 64 \\
+Compute profile & \texttt{colab\_balanced} \\
+Pilot train ceiling & 6,000 \\
+Final train ceiling & 120,000 (non-binding for 17,509 images) \\
+Pilot epochs & 2 \\
+Final head epochs & 1 \\
+Final fine-tune epochs & 6 \\
+Early-stopping patience & 2 fine-tuning epochs \\
+Minimum validation improvement & $10^{-4}$ \\
+Strict determinism & False \\
+Architectures & EfficientNet-B0, MobileNetV3-Large, ViT-Tiny \\
+Selection metric & Validation top-1 accuracy \\
+Primary final metrics & Accuracy, Macro Precision, Macro Recall, Macro F1, Weighted F1 \\
+\bottomrule
+\end{tabularx}}
+\end{center}
+
+\section*{References}\addcontentsline{toc}{section}{References}
+The supplied notebook explicitly lists the following primary sources for the dataset and project context:
+
+\begin{enumerate}
+\item DeepWeeds GitHub repository: \url{https://github.com/AlexOlsen/DeepWeeds}
+\item DeepWeeds dataset DOI: \url{https://doi.org/10.5281/zenodo.7939060}
+\item DeepWeeds paper DOI: \url{https://doi.org/10.1038/s41598-018-38343-3}
+\end{enumerate}
+
+
+\end{document}
